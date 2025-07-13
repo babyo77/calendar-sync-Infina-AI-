@@ -63,7 +63,6 @@ A modern Next.js application that provides seamless Google Calendar integration 
    GOOGLE_CLIENT_ID=your_client_id
    GOOGLE_CLIENT_SECRET=your_client_secret
    GOOGLE_REDIRECT_URI=http://localhost:3000/oauth2callback
-   WEBHOOK_URL=your_webhook_url
    ```
 
 4. **Run the development server**
@@ -268,7 +267,6 @@ vercel
 GOOGLE_CLIENT_ID=your_production_client_id
 GOOGLE_CLIENT_SECRET=your_production_client_secret
 GOOGLE_REDIRECT_URI=https://yourdomain.com/oauth2callback
-WEBHOOK_URL=https://yourdomain.com/api/webhook
 ```
 
 ## 🤝 Contributing

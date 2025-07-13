@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 // Constants
-const TOKEN_STORAGE_KEY = "google_access_token";
+const ACCESS_TOKEN_KEY = "google_access_token";
+const REFRESH_TOKEN_KEY = "google_refresh_token";
 const HOME_PATH = "/";
 const ERROR_MESSAGE = "Authentication failed. Please try again.";
 
@@ -25,7 +26,9 @@ function extractCodeFromUrl(): string | null {
   }
 }
 
-async function exchangeCodeForTokens(authCode: string): Promise<string> {
+async function exchangeCodeForTokens(
+  authCode: string
+): Promise<{ access_token: string; refresh_token: string }> {
   try {
     const response = await fetch("/api/auth", {
       method: "POST",
@@ -43,19 +46,23 @@ async function exchangeCodeForTokens(authCode: string): Promise<string> {
     }
 
     const data = await response.json();
-    return data.data.access_token;
+    return {
+      access_token: data.data.access_token,
+      refresh_token: data.data.refresh_token,
+    };
   } catch (error) {
     console.error("Token exchange error:", error);
     throw new Error("Failed to exchange authorization code for tokens");
   }
 }
 
-function saveTokenToStorage(token: string): void {
+function saveTokensToStorage(accessToken: string, refreshToken: string): void {
   try {
-    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
   } catch (error) {
-    console.error("Failed to save token to localStorage:", error);
-    throw new Error("Failed to save authentication token");
+    console.error("Failed to save tokens to localStorage:", error);
+    throw new Error("Failed to save authentication tokens");
   }
 }
 
@@ -95,11 +102,11 @@ export default function OAuth2Callback() {
           throw new Error("No authentication code found in URL");
         }
 
-        // Exchange authorization code for access token
-        const accessToken = await exchangeCodeForTokens(authCode);
+        // Exchange authorization code for tokens
+        const tokens = await exchangeCodeForTokens(authCode);
 
-        // Save access token to localStorage
-        saveTokenToStorage(accessToken);
+        // Save tokens to localStorage
+        saveTokensToStorage(tokens.access_token, tokens.refresh_token);
 
         // Update success state
         setAuthState({

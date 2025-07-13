@@ -12,6 +12,11 @@ export interface SuccessResponse<T = any> {
   message?: string;
 }
 
+// Date utility
+export function getCurrentDate(): string {
+  return new Date().toISOString().split("T")[0]; // YYYY-MM-DD format
+}
+
 // Global error response utility
 export function createErrorResponse(
   error: string,
@@ -44,12 +49,21 @@ export function getOAuth2Client() {
 
 // Extract token from headers (for Next.js API routes)
 export function tokenFromHeaders(headers: Headers) {
-  const tokenHeader =
-    headers.get("authorization") || headers.get("x-access-token");
+  const authHeader = headers.get("authorization");
+  const xAccessToken = headers.get("x-access-token");
 
-  if (tokenHeader) {
-    return tokenHeader;
+  if (authHeader) {
+    // Handle Bearer token format
+    if (authHeader.startsWith("Bearer ")) {
+      return authHeader.substring(7); // Remove "Bearer " prefix
+    }
+    return authHeader;
   }
+
+  if (xAccessToken) {
+    return xAccessToken;
+  }
+
   return null;
 }
 
@@ -72,7 +86,6 @@ export function validateEnvironmentVariables(): void {
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_REDIRECT_URI",
-    "WEBHOOK_URL",
   ];
 
   const missingVars = requiredVars.filter((varName) => !process.env[varName]);

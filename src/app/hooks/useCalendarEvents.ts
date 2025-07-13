@@ -41,7 +41,7 @@ async function fetchCalendarEvents(
   const url = `/api/events${params.toString() ? `?${params.toString()}` : ""}`;
 
   const response = await fetch(url, {
-    headers: { Authorization: token },
+    headers: { Authorization: `Bearer ${token}` },
   });
 
   if (!response.ok) {
@@ -56,17 +56,36 @@ async function fetchCalendarEvents(
 // Custom hook
 export function useCalendarEvents(
   token: string | null,
-  dateFilter?: DateFilter
+  dateFilter?: DateFilter,
+  refreshToken?: () => Promise<string | null>
 ) {
   return useQuery({
     queryKey: ["calendar-events", token, dateFilter],
-    queryFn: () => fetchCalendarEvents(token!, dateFilter),
+    queryFn: async () => {
+      try {
+        return await fetchCalendarEvents(token!, dateFilter);
+      } catch (error: any) {
+        // If it's an authentication error and we have a refresh function, try to refresh
+        if (
+          (error?.message?.includes("token") ||
+            error?.message?.includes("auth") ||
+            error?.message?.includes("authentication")) &&
+          refreshToken
+        ) {
+          const newToken = await refreshToken();
+          if (newToken) {
+            return await fetchCalendarEvents(newToken, dateFilter);
+          }
+        }
+        throw error;
+      }
+    },
     enabled: !!token,
     refetchInterval: 30000, // Poll every 30 seconds
     refetchOnWindowFocus: true,
     staleTime: 10000, // Consider data stale after 10 seconds
     retry: (failureCount, error: any) => {
-      // Don't retry on authentication errors
+      // Don't retry on authentication errors after refresh attempt
       if (
         error?.message?.includes("token") ||
         error?.message?.includes("auth")
