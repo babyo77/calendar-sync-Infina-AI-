@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 // Constants
 const ACCESS_TOKEN_KEY = "google_access_token";
 const REFRESH_TOKEN_KEY = "google_refresh_token";
+const TOKEN_EXPIRY_KEY = "google_token_expiry";
 const HOME_PATH = "/";
 const ERROR_MESSAGE = "Authentication failed. Please try again.";
 
@@ -26,9 +27,11 @@ function extractCodeFromUrl(): string | null {
   }
 }
 
-async function exchangeCodeForTokens(
-  authCode: string
-): Promise<{ access_token: string; refresh_token: string }> {
+async function exchangeCodeForTokens(authCode: string): Promise<{
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}> {
   try {
     const response = await fetch("/api/auth", {
       method: "POST",
@@ -49,6 +52,7 @@ async function exchangeCodeForTokens(
     return {
       access_token: data.data.access_token,
       refresh_token: data.data.refresh_token,
+      expires_in: data.data.expires_in,
     };
   } catch (error) {
     console.error("Token exchange error:", error);
@@ -56,10 +60,18 @@ async function exchangeCodeForTokens(
   }
 }
 
-function saveTokensToStorage(accessToken: string, refreshToken: string): void {
+function saveTokensToStorage(
+  accessToken: string,
+  refreshToken: string,
+  expiresIn: number
+): void {
   try {
     localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
     localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+
+    // Calculate expiry time (current time + expires_in seconds)
+    const expiryTime = Date.now() + expiresIn * 1000;
+    localStorage.setItem(TOKEN_EXPIRY_KEY, expiryTime.toString());
   } catch (error) {
     console.error("Failed to save tokens to localStorage:", error);
     throw new Error("Failed to save authentication tokens");
@@ -106,7 +118,11 @@ export default function OAuth2Callback() {
         const tokens = await exchangeCodeForTokens(authCode);
 
         // Save tokens to localStorage
-        saveTokensToStorage(tokens.access_token, tokens.refresh_token);
+        saveTokensToStorage(
+          tokens.access_token,
+          tokens.refresh_token,
+          tokens.expires_in
+        );
 
         // Update success state
         setAuthState({

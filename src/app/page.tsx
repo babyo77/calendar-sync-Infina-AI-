@@ -86,6 +86,7 @@ export default function Home() {
     login,
     logout,
     refreshAccessToken,
+    isTokenExpired,
   } = useAuth();
 
   const [dateFilter, setDateFilter] = useState<{
@@ -103,7 +104,12 @@ export default function Home() {
     data: events,
     isLoading,
     error,
-  } = useCalendarEvents(token, apiDateFilter, refreshAccessToken);
+  } = useCalendarEvents(
+    token,
+    apiDateFilter,
+    refreshAccessToken,
+    isTokenExpired
+  );
 
   const handleDateChange = (startDate?: Date, endDate?: Date) => {
     setDateFilter({ startDate, endDate });

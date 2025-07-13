@@ -57,24 +57,44 @@ async function fetchCalendarEvents(
 export function useCalendarEvents(
   token: string | null,
   dateFilter?: DateFilter,
-  refreshToken?: () => Promise<string | null>
+  refreshToken?: () => Promise<string | null>,
+  isTokenExpired?: () => boolean
 ) {
   return useQuery({
     queryKey: ["calendar-events", token, dateFilter],
     queryFn: async () => {
       try {
+        // Check if token is expired before making the request
+        if (isTokenExpired && isTokenExpired()) {
+          if (refreshToken) {
+            const newToken = await refreshToken();
+            if (newToken) {
+              return await fetchCalendarEvents(newToken, dateFilter);
+            }
+          }
+          throw new Error("Token expired and refresh failed");
+        }
+
         return await fetchCalendarEvents(token!, dateFilter);
       } catch (error: any) {
-        // If it's an authentication error and we have a refresh function, try to refresh
-        if (
-          (error?.message?.includes("token") ||
-            error?.message?.includes("auth") ||
-            error?.message?.includes("authentication")) &&
-          refreshToken
-        ) {
-          const newToken = await refreshToken();
-          if (newToken) {
-            return await fetchCalendarEvents(newToken, dateFilter);
+        // Only attempt refresh for specific authentication errors, not all errors
+        const isAuthError =
+          error?.message?.includes("token") ||
+          error?.message?.includes("auth") ||
+          error?.message?.includes("authentication") ||
+          error?.message?.includes("unauthorized") ||
+          error?.message?.includes("401");
+
+        if (isAuthError && refreshToken) {
+          try {
+            const newToken = await refreshToken();
+            if (newToken) {
+              return await fetchCalendarEvents(newToken, dateFilter);
+            }
+          } catch (refreshError: any) {
+            // If refresh fails, don't retry - this prevents infinite loops
+            console.error("Token refresh failed:", refreshError);
+            throw new Error("Authentication failed. Please sign in again.");
           }
         }
         throw error;
@@ -85,11 +105,15 @@ export function useCalendarEvents(
     refetchOnWindowFocus: true,
     staleTime: 10000, // Consider data stale after 10 seconds
     retry: (failureCount, error: any) => {
-      // Don't retry on authentication errors after refresh attempt
-      if (
+      // Don't retry on authentication errors - this prevents infinite loops
+      const isAuthError =
         error?.message?.includes("token") ||
-        error?.message?.includes("auth")
-      ) {
+        error?.message?.includes("auth") ||
+        error?.message?.includes("authentication") ||
+        error?.message?.includes("unauthorized") ||
+        error?.message?.includes("401");
+
+      if (isAuthError) {
         return false;
       }
       return failureCount < 3;
