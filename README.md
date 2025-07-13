@@ -4,23 +4,25 @@ A modern Next.js application that provides seamless Google Calendar integration 
 
 ## 🚀 Features
 
-- **OAuth 2.0 Authentication**: Secure Google Calendar access
-- **Real-time Event Sync**: Automatic refresh every 30 seconds
+- **OAuth 2.0 Authentication**: Secure Google Calendar access with automatic token refresh
+- **Real-time Event Sync**: Automatic refresh every 30 seconds with React Query
+- **Date Filtering**: Filter events by specific dates with a calendar interface
 - **Modern UI**: Built with Tailwind CSS and shadcn/ui components
 - **TypeScript**: Full type safety throughout the application
-- **React Query**: Efficient data fetching and caching
 - **Responsive Design**: Works on desktop and mobile devices
+- **Token Management**: Automatic token refresh and expiry handling
 
 ## 🏗️ System Architecture
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Next.js API   │    │   Google APIs   │
-│   (React)       │◄──►│   Routes        │◄──►│   Calendar API  │
-│                 │    │                 │    │                 │
-│ • useAuth       │    │ • /api/auth     │    │ • OAuth 2.0     │
-│ • useCalendar   │    │ • /api/events   │    │ • Calendar v3   │
-│ • Event Cards   │    │ • /api/login    │    │ • User Info     │
+│   Frontend      │    ┌─────────────────┐    ┌─────────────────┐
+│   (React)       │◄──►│   Next.js API   │◄──►│   Google APIs   │
+│                 │    │   Routes        │    │   Calendar API  │
+│ • useAuth       │    │                 │    │                 │
+│ • useCalendar   │    │ • /api/auth     │    │ • OAuth 2.0     │
+│ • Event Cards   │    │ • /api/events   │    │ • Calendar v3   │
+│ • Date Filter   │    │ • /api/refresh  │    │ • User Info     │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
          │                       │                       │
@@ -29,7 +31,8 @@ A modern Next.js application that provides seamless Google Calendar integration 
 │   Local Storage │    │   Environment   │    │   Google Cloud  │
 │                 │    │   Variables     │    │   Console       │
 │ • Access Token  │    │ • Client ID     │    │ • OAuth Setup   │
-│ • Auth State    │    │ • Client Secret │    │ • API Keys      │
+│ • Refresh Token │    │ • Client Secret │    │ • API Keys      │
+│ • Token Expiry  │    │ • Redirect URI  │    │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
@@ -104,6 +107,26 @@ export async function POST(req: NextRequest) {
 }
 ```
 
+**Token Refresh** (`/api/auth/refresh/route.ts`):
+```typescript
+export async function POST(req: NextRequest) {
+  const { refresh_token } = await req.json();
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+  
+  oauth2Client.setCredentials({ refresh_token });
+  const { credentials } = await oauth2Client.refreshAccessToken();
+  
+  return createSuccessResponse({
+    access_token: credentials.access_token,
+    expires_in: credentials.expiry_date,
+  });
+}
+```
+
 ### Calendar Events Fetching
 
 **API Route** (`/api/events/route.ts`):
@@ -111,21 +134,118 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const accessToken = tokenFromHeaders(req.headers);
   const calendar = await setupCalendarService(accessToken);
-  const events = await getCalendarEvents(calendar);
+  
+  // Parse date filters from query parameters
+  const { searchParams } = new URL(req.url);
+  const startDate = searchParams.get("startDate");
+  const endDate = searchParams.get("endDate");
+  
+  const events = await getCalendarEvents(calendar, { startDate, endDate });
   return createSuccessResponse(events);
 }
 ```
 
 **React Hook** (`useCalendarEvents.ts`):
 ```typescript
-export function useCalendarEvents(token: string | null) {
+export function useCalendarEvents(
+  token: string | null,
+  dateFilter?: DateFilter,
+  refreshToken?: () => Promise<string | null>,
+  isTokenExpired?: () => boolean
+) {
   return useQuery({
-    queryKey: ["calendar-events", token],
-    queryFn: () => fetchCalendarEvents(token!),
+    queryKey: ["calendar-events", token, dateFilter],
+    queryFn: async () => {
+      // Check if token is expired before making the request
+      if (isTokenExpired && isTokenExpired()) {
+        if (refreshToken) {
+          const newToken = await refreshToken();
+          if (newToken) {
+            return await fetchCalendarEvents(newToken, dateFilter);
+          }
+        }
+        throw new Error("Token expired and refresh failed");
+      }
+      return await fetchCalendarEvents(token!, dateFilter);
+    },
     enabled: !!token,
     refetchInterval: 30000, // Poll every 30 seconds
+    refetchOnWindowFocus: true,
     staleTime: 10000, // Consider data stale after 10 seconds
   });
+}
+```
+
+### Authentication Hook
+
+**useAuth Hook** (`useAuth.ts`):
+```typescript
+export function useAuth() {
+  const [token, setToken] = useState<string | null>(null);
+  const [refreshToken, setRefreshToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    // Check for tokens in localStorage on mount
+    const storedAccessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
+    const storedRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+    const storedExpiry = localStorage.getItem(TOKEN_EXPIRY_KEY);
+
+    setToken(storedAccessToken);
+    setRefreshToken(storedRefreshToken);
+    setIsLoading(false);
+
+    // Check if token is expired or about to expire (within 5 minutes)
+    if (storedExpiry) {
+      const expiryTime = parseInt(storedExpiry);
+      const currentTime = Date.now();
+      const fiveMinutes = 5 * 60 * 1000;
+
+      if (currentTime >= expiryTime - fiveMinutes) {
+        refreshAccessToken();
+      }
+    }
+  }, []);
+
+  const refreshAccessToken = async (): Promise<string | null> => {
+    if (!refreshToken) return null;
+
+    try {
+      const response = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!response.ok) throw new Error("Failed to refresh token");
+
+      const data = await response.json();
+      const newToken = data.data.access_token;
+      const expiresIn = data.data.expires_in;
+      const expiryTime = Date.now() + expiresIn * 1000;
+
+      localStorage.setItem(ACCESS_TOKEN_KEY, newToken);
+      localStorage.setItem(TOKEN_EXPIRY_KEY, expiryTime.toString());
+      setToken(newToken);
+
+      return newToken;
+    } catch (error) {
+      console.error("Token refresh failed:", error);
+      logout();
+      return null;
+    }
+  };
+
+  return {
+    token,
+    refreshToken,
+    isAuthenticated: !!token,
+    isLoading,
+    login,
+    logout,
+    refreshAccessToken,
+    isTokenExpired,
+  };
 }
 ```
 
@@ -135,46 +255,114 @@ export function useCalendarEvents(token: string | null) {
 ```typescript
 export function CalendarEventCard({ event }: CalendarEventCardProps) {
   const startTime = formatDateTime(event.start?.dateTime, event.start?.date);
-  const endTime = event.end ? formatDateTime(event.end.dateTime, event.end.date) : null;
+  const endTime = event.end 
+    ? formatDateTime(event.end.dateTime, event.end.date) 
+    : null;
 
   return (
     <Card>
       <CardContent className="p-4">
-        <h3 className="font-semibold text-lg text-gray-900">
-          {event.summary || "Untitled Event"}
-        </h3>
-        <div className="flex items-center gap-2 text-sm text-gray-600">
-          <Clock className="h-4 w-4" />
-          <span>{startTime}</span>
-        </div>
-        {event.location && (
-          <div className="flex items-center gap-2 text-sm text-gray-600">
-            <MapPin className="h-4 w-4" />
-            <span>{event.location}</span>
+        <div className="space-y-3">
+          <h3 className="font-semibold text-lg text-gray-900 line-clamp-2">
+            {event.summary || "Untitled Event"}
+          </h3>
+          
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <Clock className="h-4 w-4" />
+              <span>
+                {startTime}
+                {endTime && endTime !== startTime && ` - ${endTime}`}
+              </span>
+            </div>
+            
+            {event.location && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <MapPin className="h-4 w-4" />
+                <span className="line-clamp-1">{event.location}</span>
+              </div>
+            )}
+            
+            {event.description && (
+              <p className="text-sm text-gray-600 line-clamp-3">
+                {event.description}
+              </p>
+            )}
           </div>
-        )}
+        </div>
       </CardContent>
     </Card>
   );
 }
 ```
 
+### Date Filtering Component
+
+**DateFilter** (`DateFilter.tsx`):
+```typescript
+export function DateFilter({ onDateChange, className }: DateFilterProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+
+  useEffect(() => {
+    const today = new Date();
+    const startOfDay = new Date(today);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    onDateChange(startOfDay, endOfDay);
+  }, []);
+
+  const handleDateSelect = (date: Date | undefined) => {
+    if (date) {
+      setSelectedDate(date);
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      onDateChange(startOfDay, endOfDay);
+      setIsOpen(false);
+    }
+  };
+
+  return (
+    <div className={className}>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <CalendarIcon className="h-5 w-5" />
+            Filter by Date
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Calendar and filter controls */}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+```
+
 ## 🎯 Design Decisions
 
-### 1. **Next.js App Router Architecture**
+### 1. **Next.js 15 with App Router**
 - **Decision**: Used Next.js 15 with App Router for modern React patterns
 - **Rationale**: Provides excellent developer experience, built-in API routes, and optimal performance
 - **Benefits**: Server-side rendering, automatic code splitting, and simplified routing
 
-### 2. **OAuth 2.0 Implementation**
-- **Decision**: Implemented server-side OAuth flow with client-side token storage
+### 2. **OAuth 2.0 with Token Refresh**
+- **Decision**: Implemented server-side OAuth flow with automatic token refresh
 - **Rationale**: More secure than client-side OAuth, prevents token exposure in URLs
-- **Implementation**: Authorization code flow with PKCE would be more secure for production
+- **Implementation**: Authorization code flow with automatic refresh token handling
 
 ### 3. **React Query for Data Management**
 - **Decision**: Used TanStack Query for calendar events fetching
 - **Rationale**: Provides automatic caching, background updates, and error handling
-- **Configuration**: 30-second polling interval for real-time updates
+- **Configuration**: 30-second polling interval with smart retry logic
 
 ### 4. **TypeScript Throughout**
 - **Decision**: Full TypeScript implementation with strict typing
@@ -186,10 +374,15 @@ export function CalendarEventCard({ event }: CalendarEventCardProps) {
 - **Rationale**: Separation of concerns, reusability, and testability
 - **Pattern**: Custom hooks for business logic, presentational components for UI
 
-### 6. **Error Handling Strategy**
+### 6. **Date Filtering System**
+- **Decision**: Implemented client-side date filtering with calendar UI
+- **Rationale**: Better user experience for viewing specific date ranges
+- **Implementation**: Uses date-fns for date manipulation and react-day-picker for calendar
+
+### 7. **Error Handling Strategy**
 - **Decision**: Comprehensive error boundaries and user-friendly error messages
 - **Rationale**: Better user experience and easier debugging
-- **Implementation**: Try-catch blocks with meaningful error messages
+- **Implementation**: Try-catch blocks with meaningful error messages and automatic retry logic
 
 ## ⚖️ Trade-offs and Limitations
 
@@ -206,7 +399,7 @@ export function CalendarEventCard({ event }: CalendarEventCardProps) {
 
 ### **Scalability Concerns**
 - **API Rate Limits**: Google Calendar API has quotas
-- **Current**: No rate limiting implementation
+- **Current**: Basic error handling with retry logic
 - **Mitigation**: Implement exponential backoff and request queuing
 - **Trade-off**: Development speed vs. production readiness
 
@@ -233,10 +426,12 @@ export function CalendarEventCard({ event }: CalendarEventCardProps) {
 2. **Event Management**: Add create, edit, and delete functionality
 3. **Multiple Calendars**: Support for multiple Google Calendar accounts
 4. **Offline Support**: Service worker implementation for offline access
-5. **Advanced Filtering**: Date range, calendar selection, and search
+5. **Advanced Filtering**: Calendar selection, search, and more date range options
 6. **Mobile App**: React Native or PWA implementation
 7. **Analytics**: Event analytics and usage insights
 8. **Notifications**: Browser notifications for upcoming events
+9. **Calendar View**: Month/week/day calendar view options
+10. **Event Details**: Expandable event details with full information
 
 ## 🧪 Testing
 
@@ -288,3 +483,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [shadcn/ui](https://ui.shadcn.com/) for beautiful components
 - [Google Calendar API](https://developers.google.com/calendar) for calendar integration
 - [Tailwind CSS](https://tailwindcss.com/) for styling
+- [date-fns](https://date-fns.org/) for date manipulation
+- [Lucide React](https://lucide.dev/) for icons
